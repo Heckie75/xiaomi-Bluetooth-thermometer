@@ -1,0 +1,208 @@
+#!/usr/bin/expect
+#
+# Shell script in order to read from Xiaomi temperature humidity sensor
+#
+# Version: 2018-12-15
+#
+# MIT License
+#
+# Copyright (c) 2018 Martin Heckenbach
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+# sets output to stdout and debug
+log_user 0
+
+set HELP(about) "\nShell script in order to read from Xiaomi temperature humidity sensor\n"
+set HELP(usage) "Usage: <mac>"
+set HELP(measure) "\
+  measure                                        - Read temperature and humidity"
+set HELP(battery) "\
+  battery                                        - Read battery level"
+
+set mac                         ""
+
+set timeout                     10
+
+set DELAY                       100
+
+set HANDLES(request)           "0010"
+set HANDLES(notification)      "000e"
+set HANDLES(battery)           "0018"
+
+set REQUESTS(readMeasurements) "0100"
+
+set device(mac)                ""
+set device(temperature)        ""
+set device(humidity)           ""
+set thermostat(battery)        ""
+
+proc log {l} {
+  if {[log_user] != 0} {
+    puts $l
+  }
+}
+
+proc help {} {
+  global HELP
+  puts $HELP(about)
+  puts $HELP(usage)
+  puts ""
+}
+
+proc parseArgv {argv} {
+  global mac
+  global cmd
+
+  if {[llength $argv] < 1} {
+    help
+    exit
+  }
+
+  set mac [lindex $argv 0]
+}
+
+proc hexToASCII {hex} {
+  set h [join $hex ""];
+  return [binary format H* $h]
+}
+
+proc hexToDecimal {s} {
+  scan $s %x d
+  return $d
+}
+
+proc readHandle {handle} {
+  global DELAY
+  log "readHandle: char-read-hnd $handle"
+  send "char-read-hnd $handle\r"
+  expect {
+    "Characteristic value/descriptor: " {
+      log "ok"
+    }
+  }
+  expect -re "\[0-9a-f\ ]*" {
+    log "ok"
+  }
+  after $DELAY
+  set value $expect_out(buffer)
+  log "readHandle: $handle $value"
+  return $value
+}
+
+proc writeRequest {command} {
+  global HANDLES
+  global REQUESTS
+  global DELAY
+  global device
+
+  log "writeRequest: char-write-req $HANDLES(request) $command"
+
+  send "char-write-req $HANDLES(request) $command\r"
+  expect "Characteristic value was written successfully" {
+    log "ok"
+  }
+  expect "Notification handle = 0x$HANDLES(notification) value: " {
+    log "ok"
+  }
+  expect -re "\[0-9a-f\ ]*" {
+    log "ok"
+  }
+
+  after $DELAY
+  set notification $expect_out(buffer)
+  log "notification: 0x$HANDLES(notification) $notification"
+  return $notification
+}
+
+proc readDeviceInfo {} {
+  global HANDLES
+  global device
+
+  set device(battery) [hexToDecimal [readHandle $HANDLES(battery)]]
+}
+
+proc readMeasurements {} {
+  global REQUESTS
+  global timeout
+  global device
+
+  set raw_value [writeRequest $REQUESTS(readMeasurements)]
+
+  if {$raw_value == ""} {
+    puts "ERROR: Device hasn't responded after sync request in time ($timeout sec.)"
+    exit -1
+  }
+
+  regexp -all "T=(\[0-9\.\]+) H=(\[0-9\.\]+)" [hexToASCII $raw_value] all temp humidity
+
+  set device(temperature) $temp
+  set device(humidity) $humidity
+
+}
+
+
+proc init {} {
+
+  set connected [connect]
+  if { $connected == 0} {
+    readDeviceInfo
+    readMeasurements
+  } else {
+    puts "Connection failed."
+    exit -1
+  }
+  return $connected
+}
+
+proc connect {} {
+  global device
+  global mac
+
+  expect "\[LE\]"
+  send "connect $mac\r"
+  expect "Connection successful" {
+    set device(mac) $mac
+    return 0
+  }
+  return 1
+}
+
+proc disconnect {} {
+  global DELAY
+  send "disconnect\r"
+  after $DELAY
+}
+
+proc print {} {
+  global device
+  puts "Temperature:\t$device(temperature)°C"
+  puts "Humidity:\t$device(humidity)%"
+  puts "Battery:\t$device(battery)%"
+
+}
+
+parseArgv $argv
+spawn -noecho /usr/bin/gatttool -I
+
+init
+print
+
+disconnect
+close -i $spawn_id
