@@ -42,16 +42,20 @@ set timeout                     10
 
 set DELAY                       100
 
-set HANDLES(request)           "0010"
-set HANDLES(notification)      "000e"
-set HANDLES(battery)           "0018"
+set HANDLES(request)            "0010"
+set HANDLES(notification)       "000e"
+set HANDLES(battery)            "0018"
 
-set REQUESTS(readMeasurements) "0100"
+set REQUESTS(readMeasurements)  "0100"
 
-set device(mac)                ""
-set device(temperature)        ""
-set device(humidity)           ""
-set thermostat(battery)        ""
+set device(mac)                 ""
+set device(battery)             ""
+
+set measurement(temperature)    ""
+set measurement(rel_humidity)   ""
+set measurement(abs_humidity)   ""
+set measurement(dew_point)      ""
+set measurement(steam_pressure) ""
 
 proc log {l} {
   if {[log_user] != 0} {
@@ -108,9 +112,7 @@ proc readHandle {handle} {
 
 proc writeRequest {command} {
   global HANDLES
-  global REQUESTS
   global DELAY
-  global device
 
   log "writeRequest: char-write-req $HANDLES(request) $command"
 
@@ -141,7 +143,7 @@ proc readDeviceInfo {} {
 proc readMeasurements {} {
   global REQUESTS
   global timeout
-  global device
+  global measurement
 
   set raw_value [writeRequest $REQUESTS(readMeasurements)]
 
@@ -150,11 +152,24 @@ proc readMeasurements {} {
     exit -1
   }
 
-  regexp -all "T=(\[0-9\.\]+) H=(\[0-9\.\]+)" [hexToASCII $raw_value] all temp humidity
+  regexp -all "T=(\[0-9\.\]+) H=(\[0-9\.\]+)" [hexToASCII $raw_value] all temp rel_humidity
 
-  set device(temperature) $temp
-  set device(humidity) $humidity
+  set measurement(temperature) $temp
+  set measurement(rel_humidity) $rel_humidity
 
+  set	z1 [ expr (7.45 * $temp) / (235 + $temp) ]
+  set es [ expr 6.1 * exp($z1*2.3025851) ]
+  set e  [ expr $es * $rel_humidity / 100.0 ]
+
+  set z2 [ expr $e / 6.1 ]
+
+  # absolute humidity / g/m3
+  set measurement(abs_humidity) [ expr round((216.7 * $e) / (273.15 + $temp) * 10) / 10.0 ]
+
+  set z3 [ expr 0.434292289 * log($z2) ]
+  set measurement(dew_point) [ expr floor((235 * $z3) / (7.45 - $z3) * 10) / 10.0 ]
+
+  set measurement(steam_pressure) [ expr floor($e * 10) / 10.0 ]
 }
 
 
@@ -192,10 +207,15 @@ proc disconnect {} {
 
 proc print {} {
   global device
-  puts "Temperature:\t$device(temperature)°C"
-  puts "Humidity:\t$device(humidity)%"
-  puts "Battery:\t$device(battery)%"
-
+  global measurement
+  puts "Temperature:\t$measurement(temperature) °C"
+  puts "Dew point:\t$measurement(dew_point) °C"
+  puts "Rel. humidity:\t$measurement(rel_humidity) %"
+  puts "Abs. humidity:\t$measurement(abs_humidity) g/m³"
+  puts "Steam pressure:\t$measurement(steam_pressure) mbar"
+  puts ""
+  puts "Battery:\t$device(battery) %"
+  puts ""  
 }
 
 parseArgv $argv
